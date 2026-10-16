@@ -16,6 +16,18 @@ work_dir='' log_file='' logger_pid='' phase='начало' update_started=0
 die() { printf '\nОШИБКА: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n[%s] %s\n' "$(date '+%F %T')" "$*"; }
 
+start_logging() {
+    local script_dir
+    script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P) ||
+        die 'Не удалось определить каталог скрипта.'
+    log_file="$script_dir/up_log_$(date '+%Y-%m-%d_%H-%M-%S').txt"
+    umask 077
+    : >> "$log_file" || die "Не удалось открыть журнал: $log_file"
+    exec 3>&1 4>&2
+    exec > >(tee -a -- "$log_file") 2>&1
+    logger_pid=$!
+}
+
 require_console() {
     local terminal
     terminal=$(tty) || die 'Нужна текстовая консоль: Ctrl+Alt+F3 и отдельный вход.'
@@ -130,7 +142,7 @@ finish() {
 }
 
 main() {
-    local cmd run_id log_dir backup_dir backup_need boot_size answer status_text row module
+    local cmd run_id state_dir backup_dir backup_need boot_size answer status_text row module
     local mirror_backup running_kernel orphan_list
     local -a dkms_modules=()
     local kernel_image='' kernel_version=''
@@ -141,21 +153,17 @@ main() {
     require_console
     [[ -f /etc/arch-release ]] || die 'Нужен установленный Arch Linux, не Live USB/chroot.'
     for cmd in sudo pacman yay timeshift findmnt mktemp flock tee df awk grep \
-               tar cmp lsinitcpio mkinitcpio grub-mkconfig grub-script-check sync; do
+               tar cmp lsinitcpio mkinitcpio grub-mkconfig grub-script-check sync dirname date; do
         command -v "$cmd" >/dev/null 2>&1 || die "Не найдена команда: $cmd"
     done
     # Локальная блокировка всего сценария, независимая от блокировки pacman.
-    log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/up_arch"
-    mkdir -p -- "$log_dir"
-    chmod 700 -- "$log_dir"
-    exec 9> "$log_dir/run.lock"
+    state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/up_arch"
+    mkdir -p -- "$state_dir"
+    chmod 700 -- "$state_dir"
+    exec 9> "$state_dir/run.lock"
     flock -n 9 || die 'Другой экземпляр up_arch уже работает.'
     run_id="$(date '+%Y-%m-%d_%H-%M-%S')-$$"
-    log_file="$log_dir/$run_id.log"
-    umask 077
-    exec 3>&1 4>&2
-    exec > >(tee -a -- "$log_file") 2>&1
-    logger_pid=$!
+    start_logging
     trap finish EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
